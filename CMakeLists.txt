@@ -37,6 +37,58 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 set(NMR ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime)
 set(RT64DIR ${CMAKE_SOURCE_DIR}/lib/rt64)
 
+# --- Android (Android TV app, see android/README.md) ---
+# The engine is built as libNoMercyRecompiled.so and started by SDL's Java glue
+# (android/app). SDL2 and FreeType are built from source; host tools (file_to_c)
+# and dxc run on the build machine. android/native/build.sh drives this.
+if (ANDROID)
+    include(FetchContent)
+    # 2.30.12, not the desktop's 2.30.3: older SDL doesn't compile with NDK r27.
+    # Must match the Java glue in android/app/src/main/java/org/libsdl/app.
+    set(SDL2_VERSION "2.30.12")
+    set(SDL_SHARED ON CACHE BOOL "" FORCE)
+    set(SDL_STATIC OFF CACHE BOOL "" FORCE)
+    set(SDL_TEST OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(sdl2
+        GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+        GIT_TAG release-${SDL2_VERSION}
+        GIT_SHALLOW TRUE)
+    FetchContent_MakeAvailable(sdl2)
+    set(SDL2_INCLUDE_DIRS ${sdl2_SOURCE_DIR}/include ${sdl2_BINARY_DIR}/include ${sdl2_BINARY_DIR}/include-config-release/SDL2)
+    include_directories(${SDL2_INCLUDE_DIRS})
+    # The runtime libraries call find_package(SDL2); point them at the SDL built above.
+    file(WRITE ${CMAKE_BINARY_DIR}/sdl2-config/SDL2Config.cmake
+        "set(SDL2_FOUND TRUE)\nset(SDL2_INCLUDE_DIRS \"${SDL2_INCLUDE_DIRS}\")\nset(SDL2_LIBRARIES SDL2::SDL2)\n")
+    set(SDL2_DIR ${CMAKE_BINARY_DIR}/sdl2-config CACHE PATH "" FORCE)
+
+    set(FT_DISABLE_HARFBUZZ ON CACHE BOOL "" FORCE)
+    set(FT_DISABLE_BROTLI ON CACHE BOOL "" FORCE)
+    set(FT_DISABLE_PNG ON CACHE BOOL "" FORCE)
+    set(FT_DISABLE_BZIP2 ON CACHE BOOL "" FORCE)
+    set(FT_DISABLE_ZLIB ON CACHE BOOL "" FORCE)
+    FetchContent_Declare(freetype
+        GIT_REPOSITORY https://github.com/freetype/freetype.git
+        GIT_TAG VER-2-13-3
+        GIT_SHALLOW TRUE)
+    FetchContent_MakeAvailable(freetype)
+    if (NOT TARGET Freetype::Freetype)
+        add_library(Freetype::Freetype ALIAS freetype)
+    endif()
+    set(FREETYPE_FOUND TRUE)
+    set(FREETYPE_LIBRARIES freetype)
+    set(FREETYPE_INCLUDE_DIRS ${freetype_SOURCE_DIR}/include)
+
+    # Every library renders through the SDL Vulkan window (same path as Linux).
+    add_compile_definitions(PLUME_SDL_VULKAN_ENABLED RT64_SDL_WINDOW_VULKAN)
+
+    set(NMR_ANDROID_NFD_SOURCE ${CMAKE_SOURCE_DIR}/android/native/nfd_android.cpp)
+
+    # file_to_c must run on the build machine, not the device.
+    if (NOT NMR_HOST_FILE_TO_C)
+        message(FATAL_ERROR "Android builds need -DNMR_HOST_FILE_TO_C=<host file_to_c> (android/native/build.sh builds it).")
+    endif()
+endif()
+
 # --- RT64 (renderer) ---
 set(RT64_STATIC TRUE)
 set(RT64_SDL_WINDOW_VULKAN TRUE)
@@ -56,6 +108,10 @@ set(RECOMP_INCLUDES
 )
 
 # --- RecompiledFuncs: the recompiled game ---
+# NMR_ENGINE_ONLY builds the runtime stack without the ROM-generated game code
+# (CI checks that the Android engine compiles without having the ROM).
+option(NMR_ENGINE_ONLY "Build only the runtime libraries, not the game" OFF)
+if (NOT NMR_ENGINE_ONLY)
 add_library(RecompiledFuncs STATIC)
 target_compile_options(RecompiledFuncs PRIVATE -Wno-everything)
 target_include_directories(RecompiledFuncs PRIVATE ${RECOMP_INCLUDES})
@@ -93,6 +149,7 @@ endif()
 string(APPEND REPAIRED_TEXT "}\n")
 file(CONFIGURE OUTPUT ${REPAIRED_CPP} CONTENT "${REPAIRED_TEXT}" @ONLY)
 message(STATUS "Repaired functions registered for ROM-patch mods: ${REPAIRED_COUNT}")
+endif() # NOT NMR_ENGINE_ONLY
 
 # (Patches pipeline omitted in bootstrap — reintroduce from World Tour's
 #  CMakeLists when patches/ exists. The idle-thread fix is a toml
@@ -113,6 +170,13 @@ set(DXC_GS_OPTS "${DXC_COMMON_OPTS}" "-E" "GSMain" "-T gs_6_0")
 set(DXC_RT_OPTS "${DXC_COMMON_OPTS}" "-D" "RT_SHADER" "-T" "lib_6_3" "-fspv-target-env=vulkan1.1spirv1.4" "-fspv-extension=SPV_KHR_ray_tracing" "-fspv-extension=SPV_EXT_descriptor_indexing")
 if (WIN32)
     set(DXC "${RT64DIR}/src/contrib/dxc/bin/x64/dxc.exe")
+elseif (ANDROID)
+    # Shaders compile on the build machine with RT64's bundled Linux dxc.
+    if (CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+        set(DXC "LD_LIBRARY_PATH=${RT64DIR}/src/contrib/dxc/lib/x64" "${RT64DIR}/src/contrib/dxc/bin/x64/dxc-linux")
+    else()
+        set(DXC "LD_LIBRARY_PATH=${RT64DIR}/src/contrib/dxc/lib/arm64" "${RT64DIR}/src/contrib/dxc/bin/arm64/dxc-linux")
+    endif()
 endif()
 
 # --- SDL2 (recompui/recompinput expect sdl2_SOURCE_DIR on Windows) ---
@@ -129,8 +193,51 @@ set(RECOMP_FRONTEND_N64MODERNRUNTIME_PATH ${NMR})
 set(RECOMP_FRONTEND_RT64_PATH ${RT64DIR})
 add_subdirectory(${CMAKE_SOURCE_DIR}/lib/RecompFrontend)
 
-# --- Main executable ---
-add_executable(NoMercyRecompiled)
+if (NMR_ENGINE_ONLY)
+    # Still compile the game's own (non-generated) sources so CI catches
+    # platform breakage without needing the ROM.
+    add_library(NoMercyGameSources OBJECT
+        ${CMAKE_SOURCE_DIR}/src/main/main.cpp
+        ${CMAKE_SOURCE_DIR}/src/game/recomp_api.cpp
+        ${CMAKE_SOURCE_DIR}/src/game/raytracing.cpp
+        ${CMAKE_SOURCE_DIR}/src/ra/ra_client.cpp)
+    foreach (IMG icon logo)
+        set(IMG_PNG ${CMAKE_SOURCE_DIR}/icons/app.png)
+        if (IMG STREQUAL "logo")
+            set(IMG_PNG ${CMAKE_SOURCE_DIR}/icons/logo.png)
+        endif()
+        add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${IMG}_bytes.c ${CMAKE_CURRENT_BINARY_DIR}/${IMG}_bytes.h
+            COMMAND file_to_c ${IMG_PNG} ${IMG}_bytes ${CMAKE_CURRENT_BINARY_DIR}/${IMG}_bytes.c ${CMAKE_CURRENT_BINARY_DIR}/${IMG}_bytes.h
+            DEPENDS ${IMG_PNG} file_to_c)
+        target_sources(NoMercyGameSources PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/${IMG}_bytes.c)
+    endforeach()
+    target_include_directories(NoMercyGameSources PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${NMR}/N64Recomp/include
+        ${NMR}/thirdparty/sse2neon
+        ${RT64DIR}/src
+        ${CMAKE_SOURCE_DIR}/lib/RecompFrontend/recompinput/include
+        ${CMAKE_SOURCE_DIR}/lib/RecompFrontend/recompui/include
+        ${CMAKE_SOURCE_DIR}/src/ra/rcheevos/include
+        ${CMAKE_SOURCE_DIR}/src/ra/rcheevos/src
+        ${CMAKE_CURRENT_BINARY_DIR})
+    target_compile_definitions(NoMercyGameSources PRIVATE RC_DISABLE_LUA RC_CLIENT_SUPPORTS_HASH)
+    target_compile_options(NoMercyGameSources PRIVATE -fno-strict-aliasing -fms-extensions)
+    target_link_libraries(NoMercyGameSources PRIVATE recompui recompinput librecomp ultramodern rt64)
+    return()
+endif()
+
+# --- Main executable (a shared library on Android, loaded by SDLActivity) ---
+if (ANDROID)
+    add_library(NoMercyRecompiled SHARED)
+    if (NMR_ANDROID_LIB_NAME)
+        # One engine, one .so per app: libNoMercyRecompiled.so / libECWRecompiled.so
+        set_target_properties(NoMercyRecompiled PROPERTIES OUTPUT_NAME ${NMR_ANDROID_LIB_NAME})
+    endif()
+    target_link_libraries(NoMercyRecompiled PRIVATE SDL2::SDL2 android log)
+else()
+    add_executable(NoMercyRecompiled)
+endif()
 
 # App icon: exe resource (Windows title bar/taskbar/Explorer) + embedded PNG bytes for
 # the launcher thumbnail (GameEntry.thumbnail_bytes).

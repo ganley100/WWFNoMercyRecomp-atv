@@ -1,0 +1,15 @@
+diff --git a/lib/dictBuilder/cover.c b/lib/dictBuilder/cover.c
+index 386a4d5..3f3ecd0 100644
+--- a/lib/dictBuilder/cover.c
++++ b/lib/dictBuilder/cover.c
+@@ -241,6 +241,10 @@ typedef struct {
+   unsigned d;
+ } COVER_ctx_t;
+ 
++#if defined(__ANDROID__) && defined(_GNU_SOURCE)
++/* Bionic has no qsort_r before API 36: use the portable qsort() fallback. */
++#undef _GNU_SOURCE
++#endif
+ #if !defined(_GNU_SOURCE) && !defined(__APPLE__) && !defined(_MSC_VER)
+ /* C90 only offers qsort() that needs a global context. */
+ static COVER_ctx_t *g_coverCtx = NULL;

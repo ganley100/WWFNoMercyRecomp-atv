@@ -26,21 +26,33 @@ adb install app/build/outputs/apk/ecw/release/app-ecw-release.apk
 Release APKs are signed with the debug key so they can be sideloaded; use your own
 keystore before sharing them.
 
-## Status: the game engine is not in these APKs yet
+## The game engine
 
-The apps start the game through SDL2 (`GameActivity`, SDL 2.30.3 Java glue in
-`org.libsdl.app`), which loads `libSDL2.so` and the flavor's game library from
-`app/src/<flavor>/jniLibs/arm64-v8a/`. Those libraries don't exist yet, so today the
-apps install and show their banners, then report a missing library on launch.
+`android/native/build.sh <nomercy|ecw>` cross-compiles the engine (RT64 on Vulkan,
+N64ModernRuntime, RecompFrontend, SDL 2.30.12) for arm64 Android with the NDK and copies
+`libSDL2.so`, the game library and `libc++_shared.so` into `app/src/<flavor>/jniLibs/`.
+It first applies `android/native/patches/` to the runtime submodules (Android window
+and Vulkan surface, cross-compiling host tools, Bionic fixes).
 
-Still to do:
+- `--engine-only` builds everything except the ROM-generated game code. CI runs this on
+  every push.
+- Without it, the game code must already be generated from your ROM (`RecompiledFuncs/`
+  and `rsp/`, see BUILDING.md). CI does this when the repository has the
+  `NOMERCY_ROM_REPO` and `NOMERCY_CI_PAT` secrets, the same ones the Windows build uses.
 
-1. **Android/arm64 build of the port.** The top-level `CMakeLists.txt` and the runtime
-   stack (N64ModernRuntime, RecompFrontend, RT64) are Windows-only right now. RT64 has to
-   run on Vulkan through SDL's Android window, and the game has to read the ROM and write
-   saves through Android storage.
-2. **ECW Born to be Wired recompile.** ECW is a relinked hack of No Mercy, so it can't be a
-   patch mod (see the main README). It needs its own N64Recomp run and symbols, built
-   into `libECWRecompiled.so`.
+On Android the engine runs from the app's internal storage in portable mode: its UI
+files are unpacked there on first launch, and saves, config and mods live there too.
+The ROM is never in the APK. On first start the game asks for it like on PC, using the
+system file picker. On TVs without one, copy the ROM into
+`Android/data/<package>/files/` (shown on screen) and choose again.
 
-The game reads `--game nomercy` or `--game ecw` from its arguments.
+Requires Android 9 or newer and a Vulkan 1.1 GPU.
+
+## Status
+
+- **WWF No Mercy**: the engine compiles for Android. The full game build needs the ROM
+  secrets in CI and hasn't been tested on a TV yet.
+- **ECW Born to be Wired**: still needs its own recompile. ECW is a relinked hack of No
+  Mercy, so it can't be a patch mod (see the main README). It needs its own N64Recomp
+  config and symbols, built from the ECW ROM into `libECWRecompiled.so`. Until then, its
+  app shows a missing-library message when opened.

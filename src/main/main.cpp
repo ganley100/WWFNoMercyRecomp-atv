@@ -817,7 +817,26 @@ static void register_texture_packs(const std::filesystem::path& app_folder, bool
     }
 }
 
+#if defined(__ANDROID__)
+#include <unistd.h>
+#include "SDL_system.h"
+// Android TV: the APK's assets (UI, fonts, mods, controller db) are unpacked by
+// GameActivity into internal storage. Run from there in portable mode so the
+// asset paths, config, saves and mods all resolve to that one folder.
+static void android_enter_app_folder() {
+    const char* dir = SDL_AndroidGetInternalStoragePath();
+    if (dir == nullptr || chdir(dir) != 0) {
+        fprintf(stderr, "[android] cannot enter app folder %s\n", dir ? dir : "(null)");
+        return;
+    }
+    std::ofstream(std::filesystem::path(dir) / "portable.txt").flush();
+}
+#endif
+
 int main(int argc, char** argv) {
+#if defined(__ANDROID__)
+    android_enter_app_folder();
+#endif
     bool show_console = false;
     bool dump_textures = false;
     for (int i = 1; i < argc; i++) {

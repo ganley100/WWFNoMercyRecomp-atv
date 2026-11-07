@@ -106,3 +106,7 @@ ra*.log
 *.err.log
 *.out.log
 wcw_*_log.csv
+
+# Android TV native builds
+/build-android-*/
+/android/app/src/*/jniLibs/

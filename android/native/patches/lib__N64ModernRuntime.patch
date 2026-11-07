@@ -1,0 +1,18 @@
+diff --git a/librecomp/src/save_backups.cpp b/librecomp/src/save_backups.cpp
+index 0751323..a515352 100644
+--- a/librecomp/src/save_backups.cpp
++++ b/librecomp/src/save_backups.cpp
+@@ -118,7 +118,13 @@ namespace recomp {
+                 return std::nullopt;
+             }
+ 
++#if defined(_LIBCPP_VERSION)
++            // libc++ (Android NDK) has no clock_cast; file_clock::to_sys does the same conversion.
++            const auto sys = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
++                std::chrono::file_clock::to_sys(ftime));
++#else
+             const auto sys = std::chrono::clock_cast<std::chrono::system_clock>(ftime);
++#endif
+             return from_time_t(std::chrono::system_clock::to_time_t(sys));
+         }
+ 

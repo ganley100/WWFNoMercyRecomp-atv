@@ -1,28 +1,48 @@
 # Builds the two Android TV apps in android/ (WWF No Mercy and ECW Born to be
-# Wired) and uploads the APKs as workflow artifacts. No ROM or submodules are
-# needed: this packages the apps with their banners; the native game libraries
-# are not built yet (see android/README.md).
+# Wired) and uploads the APKs as workflow artifacts.
+#
+# Always: cross-compiles the game engine for Android (arm64) to check that it
+# builds, and packages both apps with their banners.
+#
+# With the ROM: if the repository has the same secrets the Windows build uses,
+# the ROM is recompiled into game code and the full engine is packaged into
+# the WWF No Mercy APK, so the game actually runs.
+#   NOMERCY_CI_PAT   - fine-grained PAT (Contents: read-only) for the ROM repo
+#   NOMERCY_ROM_REPO - "<owner>/<repo>" of a PRIVATE repo with nomercy.z64 at its root
+# ECW Born to be Wired needs its own recompile (see android/README.md), so its
+# APK does not contain the engine yet.
 name: android-tv
 on:
   push:
     paths:
       - 'android/**'
+      - 'src/**'
+      - 'assets/**'
+      - 'CMakeLists.txt'
+      - 'lib/**'
       - '.github/workflows/android-tv.yml'
   pull_request:
     paths:
       - 'android/**'
+      - 'src/**'
+      - 'assets/**'
+      - 'CMakeLists.txt'
+      - 'lib/**'
       - '.github/workflows/android-tv.yml'
   workflow_dispatch:
+
+env:
+  NDK_VERSION: '27.2.12479018'
+  N64RECOMP_COMMIT: 'ffb39cdad1da5de07eaaa48bd1db4a89a7986771'
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: android
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -35,19 +55,88 @@ jobs:
         with:
           # The default list includes the retired 'tools' package, which no
           # longer exists and makes sdkmanager fail.
-          packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0 ndk;27.2.12479018'
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Check for the ROM secrets
+        id: rom
+        env:
+          ROM_REPO: ${{ secrets.NOMERCY_ROM_REPO }}
+          ROM_PAT: ${{ secrets.NOMERCY_CI_PAT }}
+        run: |
+          if [ -n "$ROM_REPO" ] && [ -n "$ROM_PAT" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No ROM secrets: building the engine check and app shells only."
+          fi
+
+      - name: Build the engine for Android (no game code)
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+        run: android/native/build.sh nomercy --engine-only
+
+      # ---- Game build (only with the ROM) ----
+
+      - name: Get ROM
+        if: steps.rom.outputs.present == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.NOMERCY_ROM_REPO }}
+          token: ${{ secrets.NOMERCY_CI_PAT }}
+          path: nomercy-secret
+
+      - name: Recompile the ROM into game code
+        if: steps.rom.outputs.present == 'true'
+        run: |
+          cp nomercy-secret/nomercy.z64 .
+          git clone https://github.com/N64Recomp/N64Recomp.git --recurse-submodules N64RecompSource
+          git -C N64RecompSource checkout "$N64RECOMP_COMMIT"
+          git -C N64RecompSource submodule update --init --recursive
+          cmake -S N64RecompSource -B N64RecompSource/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build N64RecompSource/build --target N64RecompCLI RSPRecomp
+          N64RecompSource/build/N64Recomp nomercy.toml
+          N64RecompSource/build/RSPRecomp rsp/nomercy_audio.toml
+          # Mandatory post-regen fixups (BUILDING.md §4), same order as the Windows CI.
+          python3 tools/fix_stumps.py
+          python3 tools/fix_switches.py
+          python3 tools/fix_jraddend.py
+          python3 tools/fix_backbranches.py
+          python3 tools/fix_selfentry.py
+          python3 tools/readd_hand_edits.py
+          python3 tools/audit_coresidency.py
+          python3 tools/romhack/list_repaired_functions.py
+
+      - name: Build the full game for Android
+        if: steps.rom.outputs.present == 'true'
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+        run: android/native/build.sh nomercy
+
+      # ---- APKs ----
+
       - name: Build APKs
+        working-directory: android
         run: ./gradlew --no-daemon assembleNomercyRelease assembleEcwRelease
 
       - name: Rename APKs
+        working-directory: android
         run: |
           mkdir -p dist
           cp app/build/outputs/apk/nomercy/release/app-nomercy-release.apk dist/WWF-No-Mercy-AndroidTV.apk
           cp app/build/outputs/apk/ecw/release/app-ecw-release.apk dist/ECW-Born-to-be-Wired-AndroidTV.apk
+
+      - name: Assert no ROM in the APKs
+        working-directory: android
+        run: |
+          for apk in dist/*.apk; do
+            if unzip -l "$apk" | grep -Ei '\.(z64|n64|v64)$'; then echo "ROM found in $apk"; exit 1; fi
+          done
 
       - name: Upload WWF No Mercy APK
         uses: actions/upload-artifact@v4
