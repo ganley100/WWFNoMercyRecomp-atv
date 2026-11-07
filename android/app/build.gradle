@@ -1,0 +1,53 @@
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace "com.nomercyrecomp.atv"
+    compileSdk 34
+
+    defaultConfig {
+        minSdk 26          // Android TV 8.0+; Vulkan 1.1 baseline for RT64
+        targetSdk 34
+        versionCode 1
+        versionName "0.1.0"
+        ndk { abiFilters "arm64-v8a" }
+    }
+
+    // One installable app per game: each flavor has its own package id, name,
+    // launcher banner/icon and native library, so both can sit side by side
+    // on the Android TV home screen.
+    flavorDimensions "game"
+    productFlavors {
+        nomercy {
+            dimension "game"
+            applicationId "com.nomercyrecomp.nomercy"
+            resValue "string", "app_name", "WWF No Mercy"
+            buildConfigField "String", "GAME_ID", "\"nomercy\""
+            buildConfigField "String", "NATIVE_LIB", "\"NoMercyRecompiled\""
+        }
+        ecw {
+            dimension "game"
+            applicationId "com.nomercyrecomp.ecw"
+            resValue "string", "app_name", "ECW Born to be Wired"
+            buildConfigField "String", "GAME_ID", "\"ecw\""
+            buildConfigField "String", "NATIVE_LIB", "\"ECWRecompiled\""
+        }
+    }
+
+    buildFeatures { buildConfig true }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // Debug-signed so a release APK can be sideloaded straight away;
+            // swap in your own keystore before distributing.
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
