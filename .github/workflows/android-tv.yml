@@ -1,0 +1,58 @@
+# Builds the two Android TV apps in android/ (WWF No Mercy and ECW Born to be
+# Wired) and uploads the APKs as workflow artifacts. No ROM or submodules are
+# needed: this packages the apps with their banners; the native game libraries
+# are not built yet (see android/README.md).
+name: android-tv
+on:
+  push:
+    paths:
+      - 'android/**'
+      - '.github/workflows/android-tv.yml'
+  pull_request:
+    paths:
+      - 'android/**'
+      - '.github/workflows/android-tv.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build APKs
+        run: ./gradlew --no-daemon assembleNomercyRelease assembleEcwRelease
+
+      - name: Rename APKs
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/nomercy/release/app-nomercy-release.apk dist/WWF-No-Mercy-AndroidTV.apk
+          cp app/build/outputs/apk/ecw/release/app-ecw-release.apk dist/ECW-Born-to-be-Wired-AndroidTV.apk
+
+      - name: Upload WWF No Mercy APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WWF-No-Mercy-AndroidTV
+          path: android/dist/WWF-No-Mercy-AndroidTV.apk
+
+      - name: Upload ECW Born to be Wired APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ECW-Born-to-be-Wired-AndroidTV
+          path: android/dist/ECW-Born-to-be-Wired-AndroidTV.apk
